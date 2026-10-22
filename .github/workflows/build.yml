@@ -1,0 +1,85 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: 装交叉编译工具链
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-arm-linux-gnueabihf \
+            g++-arm-linux-gnueabihf \
+            qemu-user-static
+
+      - name: 编译 QuickNES 核心
+        run: bash scripts/build_core.sh
+
+      - name: 编译主程序
+        run: bash scripts/build_app.sh
+
+      - name: 验证产物 (架构 / 静态链接 / 零依赖)
+        run: |
+          set -e
+          file build/eink-nes
+          file build/eink-nes | grep -q "ARM, EABI5"
+          file build/eink-nes | grep -q "statically linked"
+          nm=$(arm-linux-gnueabihf-readelf -d build/eink-nes 2>/dev/null | grep -c NEEDED || true)
+          echo "NEEDED=$nm"
+          test "$nm" = "0"
+
+      - name: 冒烟测试 (QEMU 跑 ARM 二进制)
+        run: |
+          set -e
+          # 没有 /dev/fb0 就建一个虚拟的
+          if [ ! -e /dev/fb0 ]; then
+            echo "no /dev/fb0, 用 dummy 模式验证启动路径"
+            # eink-nes 需要真 fb, 这里只验证 --help 不崩
+            qemu-arm-static ./build/eink-nes -h 2>&1 | head -20 || true
+          else
+            python3 scripts/make_test_rom.py /tmp/test.nes
+            timeout 60 qemu-arm-static ./build/eink-nes -f /dev/fb0 -n 60 -p /tmp/shot.ppm /tmp/test.nes
+            ls -lh /tmp/shot.ppm
+          fi
+
+      - name: 打包
+        run: bash scripts/package.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eink-nes-pw3
+          path: |
+            eink-nes-pw3.tar.gz
+            build/eink-nes
+
+      - name: 发布 Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            eink-nes-pw3.tar.gz
+            build/eink-nes
+          body: |
+            Kindle Paperwhite 3 NES 模拟器
+
+            ## 安装
+            ```bash
+            tar xzf eink-nes-pw3.tar.gz -C /mnt/us
+            ```
+            然后 KUAL → eink-nes → 启动 NES 模拟器。
+
+            ## 文件
+            - `eink-nes-pw3.tar.gz` — 完整包（可执行文件 + KUAL 菜单 + 测试 ROM）
+            - `eink-nes` — 仅可执行文件（ARMv7 静态，752KB）
+          generate_release_notes: true

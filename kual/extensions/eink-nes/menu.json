@@ -1,0 +1,22 @@
+{
+    "items": [
+        {
+            "name": "eink-nes",
+            "priority": 1,
+            "items": [
+                {
+                    "name": "启动 NES 模拟器",
+                    "priority": 1,
+                    "action": "eink-nes.sh",
+                    "params": ""
+                },
+                {
+                    "name": "查看日志",
+                    "priority": 2,
+                    "action": "showlog.sh",
+                    "params": ""
+                }
+            ]
+        }
+    ]
+}

@@ -1,0 +1,20 @@
+# 构建产物
+build/
+dist/
+*.tar.gz
+*.o
+*.a
+
+# 测试 ROM (用 scripts/make_test_rom.py 生成)
+roms/*.nes
+!roms/.gitkeep
+
+# 截图/调试产物
+*.ppm
+*.log
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+.DS_Store

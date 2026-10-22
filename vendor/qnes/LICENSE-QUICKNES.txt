@@ -1,0 +1,49 @@
+本目录 (vendor/qnes) 包含 QuickNES (Nes_Emu 0.7.0) 的源码快照。
+
+来源: https://github.com/kode54/QuickNES_Core
+作者: Shay Green (blargg) / kode54 及 libretro 贡献者
+许可: GNU Lesser General Public License v2.1 (LGPL-2.1)
+
+上游仓库未包含独立的 LICENSE 文件，但每个源文件头部都有明确声明，例如
+vendor/qnes/fex/Data_Reader.cpp:
+
+    /* Copyright (C) 2005-2009 Shay Green. This module is free software; you
+    can redistribute it and/or modify it under the terms of the GNU Lesser
+    General Public License as published by the Free Software Foundation; either
+    version 2.1 of the License, or (at your option) any later version. This
+    module is distributed in the hope that it will be useful, but WITHOUT ANY
+    WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+    FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public License for more
+    details. You should have received a copy of the GNU Lesser General Public
+    License along with this module; if not, write to the Free Software Foundation,
+    Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA */
+
+LGPL-2.1 全文: https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt
+
+---------------------------------------------------------------------------
+本项目的修改
+---------------------------------------------------------------------------
+
+源码本身未做修改。仅在构建时修改配置：
+
+  scripts/build_core.sh 把以下两处 #define 注释掉（关闭 zlib 支持）：
+
+    vendor/qnes/nes_emu/blargg_config.h:  #define HAVE_ZLIB_H
+    vendor/qnes/fex/blargg_config.h:      #define HAVE_ZLIB_H
+
+原因：交叉编译环境没有 armhf 的 libz.a，链接会缺 gzopen/gzread/gzclose。
+.nes 是未压缩格式，不需要 gzip 支持。该修改可通过重新定义宏还原。
+
+---------------------------------------------------------------------------
+LGPL 合规说明
+---------------------------------------------------------------------------
+
+本项目将 QuickNES 静态链接进 eink-nes 可执行文件。LGPL-2.1 第 6 条要求
+允许用户用修改过的库版本重新链接。静态链接场景下，本仓库通过以下方式满足：
+
+  1. QuickNES 完整源码在本目录下，用户可自由修改并重新编译
+  2. 构建脚本 (scripts/build_core.sh) 完整公开，可复现
+  3. 用户可自行运行 build_core.sh + build_app.sh 生成替换用的可执行文件
+
+若需要严格合规的二进制分发方案，可联系仓库所有者索取 .o 目标文件集合，
+或改用动态链接构建（见 README 的 License 章节）。
