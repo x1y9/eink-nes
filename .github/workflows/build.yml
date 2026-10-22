@@ -39,19 +39,14 @@ jobs:
           echo "NEEDED=$nm"
           test "$nm" = "0"
 
-      - name: 冒烟测试 (QEMU 跑 ARM 二进制)
+      - name: 冒烟测试 (QEMU 干跑, 不需要真 framebuffer)
         run: |
           set -e
-          # 没有 /dev/fb0 就建一个虚拟的
-          if [ ! -e /dev/fb0 ]; then
-            echo "no /dev/fb0, 用 dummy 模式验证启动路径"
-            # eink-nes 需要真 fb, 这里只验证 --help 不崩
-            qemu-arm-static ./build/eink-nes -h 2>&1 | head -20 || true
-          else
-            python3 scripts/make_test_rom.py /tmp/test.nes
-            timeout 60 qemu-arm-static ./build/eink-nes -f /dev/fb0 -n 60 -p /tmp/shot.ppm /tmp/test.nes
-            ls -lh /tmp/shot.ppm
-          fi
+          python3 scripts/make_test_rom.py /tmp/test.nes
+          # -d 干跑: 内存模拟 1072x1448 PW3 屏幕, 验证核心 + 渲染管线
+          # 程序内部会统计灰度层次数, <3 层返回 exit 2
+          timeout 120 qemu-arm-static ./build/eink-nes -d -n 100 /tmp/test.nes
+          echo "冒烟测试通过"
 
       - name: 打包
         run: bash scripts/package.sh

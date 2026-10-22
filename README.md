@@ -75,8 +75,17 @@ cd /mnt/us
 -j <N>         每 N 帧渲染一次（默认 1）
 -p <file.ppm>  退出时把屏幕存成 PPM（调试）
 -n <帧数>      跑够 N 帧自动退出（调试）
+-d             干跑模式：不碰 framebuffer，只验证核心和渲染管线
 -b             基准测试模式
 -h             帮助
+```
+
+**干跑模式 `-d`** 值得一提：它在内存里模拟一块 PW3 尺寸（1072×1448）的 framebuffer，跑完 N 帧后统计游戏区有多少个不同灰度值，少于 3 层就返回 exit 2。CI 用它做冒烟测试，不需要真机也不需要 `/dev/fb0`。
+
+```bash
+./eink-nes -d -n 100 roms/test.nes
+# [dry] 游戏区灰度层次: 5
+# [dry] PASS
 ```
 
 **关于 `-j`**：默认 1（每帧都刷）。真机上建议开到 **3–5**。墨水屏单次 GC16 刷新要 200–300ms，每帧都刷会把循环卡死。跳帧后模拟继续跑，只是画面更新变慢——反而更省电。
@@ -202,13 +211,21 @@ git submodule update --init --recursive
 
 ### 在 x86 上验证（不需要真机）
 
+**不需要真机，也不需要 framebuffer**：
+
 ```bash
 sudo apt install qemu-user-static
 python3 scripts/make_test_rom.py roms/test.nes
-qemu-arm-static ./build/eink-nes -f /dev/fb0 -n 150 -p /tmp/shot.ppm roms/test.nes
+qemu-arm-static ./build/eink-nes -d -n 100 roms/test.nes
 ```
 
-会生成 PPM 截图。需要机器上有 `/dev/fb0`（`modprobe vfb` 或 `Xvfb`）。
+`-d` 在内存里模拟 PW3 屏幕，跑完自检灰度层次数。这是 CI 用的方式。
+
+如果想看实际画面（需要机器上有可写的 `/dev/fb0`）：
+
+```bash
+qemu-arm-static ./build/eink-nes -f /dev/fb0 -n 150 -p /tmp/shot.ppm roms/test.nes
+```
 
 ## 已知限制
 

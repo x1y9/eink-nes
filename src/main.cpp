@@ -452,7 +452,8 @@ static void usage(const char* argv0) {
         "  -j <帧跳>     每 N 帧渲染 1 次 (默认 1)\n"
         "  -b            跳过开场, 直接跑基准测试\n"
         "  -p <file.ppm> 退出前把屏幕存成 PPM (调试用)\n"
-        "  -n <帧数>     跑够 N 帧后自动退出 (调试用)\n",
+        "  -n <帧数>     跑够 N 帧后自动退出 (调试用)\n"
+        "  -d            干跑模式: 不碰 framebuffer, 只验证核心和渲染逻辑\n",
         argv0);
 }
 
@@ -464,11 +465,12 @@ int main(int argc, char** argv) {
     int bench = 0;
     const char* ppm_path = nullptr;
     long max_frames = 0;
+    int dry_run = 0;
     std::vector<std::string> romdirs;
     std::string rompath;
 
     int opt;
-    while ((opt = getopt(argc, argv, "f:t:s:r:j:p:n:bh")) != -1) {
+    while ((opt = getopt(argc, argv, "f:t:s:r:j:p:n:dbh")) != -1) {
         switch (opt) {
             case 'f': fbdev = optarg; break;
             case 't': todev = optarg; break;
@@ -478,6 +480,7 @@ int main(int argc, char** argv) {
             case 'b': bench = 1; break;
             case 'p': ppm_path = optarg; break;
             case 'n': max_frames = atol(optarg); break;
+            case 'd': dry_run = 1; break;
             case 'h': default: usage(argv[0]); return 1;
         }
     }
@@ -487,7 +490,21 @@ int main(int argc, char** argv) {
     signal(SIGTERM, on_sigint);
 
     FB fb;
-    if (!fb_open(&fb, fbdev)) {
+    std::vector<unsigned char> dry_mem;
+
+    if (dry_run) {
+        // 干跑: 用内存缓冲冒充 PW3 屏幕, 不碰任何设备
+        fb.w = 1072;
+        fb.h = 1448;
+        fb.bits = 16;
+        fb.is_16bpp = 1;
+        fb.line_bytes = fb.w * 2;
+        fb.maplen = (size_t)fb.line_bytes * fb.h;
+        dry_mem.assign(fb.maplen, 0);
+        fb.mem = dry_mem.data();
+        // 触摸直接用内存假变量 (保留空 fd)
+        fprintf(stderr, "[dry] 干跑模式: 模拟 1072x1448 16bpp framebuffer, 不触碰设备\n");
+    } else if (!fb_open(&fb, fbdev)) {
         fprintf(stderr, "无法打开 framebuffer，试试 sudo 或确认设备路径\n");
         return 1;
     }
@@ -510,7 +527,9 @@ int main(int argc, char** argv) {
 
     // 触摸设备
     TouchState touch;
-    if (!todev) {
+    if (dry_run) {
+        touch.fd = -1;
+    } else if (!todev) {
         const char* cands[] = {"/dev/input/event1", "/dev/input/event0",
                                "/dev/input/event2", "/dev/input/event3"};
         for (int i = 0; i < 4; i++) {
@@ -637,10 +656,33 @@ int main(int argc, char** argv) {
     fprintf(stderr, "\n[exit] %lu frames, %.2fs, %.1f fps avg\n", frames, dt, frames / dt);
 
     if (ppm_path) fb_save_ppm(&fb, ppm_path);
+
+    if (dry_run) {
+        // 自检: 统计游戏区有多少个不同的灰度值
+        int hist[256] = {0};
+        for (int y = L.game_y; y < L.game_y + L.game_h && y < fb.h; y++) {
+            for (int x = L.game_x; x < L.game_x + L.game_w && x < fb.w; x++) {
+                unsigned short v = *(unsigned short*)(fb.mem + (size_t)y * fb.line_bytes + x * 2);
+                unsigned int n = (v >> 11) & 0x1F;
+                hist[n * 255 / 31]++;
+            }
+        }
+        int levels = 0;
+        for (int i = 0; i < 256; i++) if (hist[i]) levels++;
+        fprintf(stderr, "[dry] 游戏区灰度层次: %d\n", levels);
+        if (levels < 3) {
+            fprintf(stderr, "[dry] 失败: 灰度层次不足 (%d < 3), 渲染管线异常\n", levels);
+            return 2;
+        }
+        fprintf(stderr, "[dry] PASS\n");
+    }
+
     eink_finish(&eink, fb.w, fb.h);
 
-    munmap(fb.mem, fb.maplen);
-    close(fb.fd);
+    if (!dry_run) {
+        munmap(fb.mem, fb.maplen);
+        close(fb.fd);
+    }
     if (touch.fd >= 0) close(touch.fd);
     return 0;
 }
