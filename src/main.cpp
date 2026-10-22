@@ -16,6 +16,7 @@
 #include <errno.h>
 #include <time.h>
 #include <signal.h>
+#include <getopt.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -448,12 +449,14 @@ static void usage(const char* argv0) {
         "  -f <fb>       framebuffer 设备 (默认 /dev/fb0)\n"
         "  -t <event>    触摸设备 (默认自动检测)\n"
         "  -s <1-5>      缩放倍数 (默认按屏幕自动)\n"
-        "  -r <dir>      ROM 目录 (可多次)\n"
+        "  -r <dir>      ROM 目录 (可多次, 默认 ../roms 即本程序同级 roms/)\n"
         "  -j <帧跳>     每 N 帧渲染 1 次 (默认 1)\n"
         "  -b            跳过开场, 直接跑基准测试\n"
         "  -p <file.ppm> 退出前把屏幕存成 PPM (调试用)\n"
         "  -n <帧数>     跑够 N 帧后自动退出 (调试用)\n"
-        "  -d            干跑模式: 不碰 framebuffer, 只验证核心和渲染逻辑\n",
+        "  -d, --dry-run 干跑模式: 不碰 framebuffer, 只验证核心和渲染逻辑\n"
+        "  -P, --probe   探测模式: 扫描 eink ioctl 号后退出 (真机诊断用)\n"
+        "  -h, --help    显示本帮助\n",
         argv0);
 }
 
@@ -466,11 +469,25 @@ int main(int argc, char** argv) {
     const char* ppm_path = nullptr;
     long max_frames = 0;
     int dry_run = 0;
+    int probe_only = 0;
     std::vector<std::string> romdirs;
     std::string rompath;
 
     int opt;
-    while ((opt = getopt(argc, argv, "f:t:s:r:j:p:n:dbh")) != -1) {
+    // long_opts: 让 --dry-run / --probe 也能用。
+    // getopt 只认短选项, KUAL 脚本里写 --dry-run 会被当成非法参数直接退出,
+    // 所以必须显式声明长选项。
+    static const struct option long_opts[] = {
+        { "dry-run", no_argument,       nullptr, 'd' },
+        { "probe",   no_argument,       nullptr, 'P' },
+        { "rom-dir", required_argument, nullptr, 'r' },
+        { "scale",   required_argument, nullptr, 's' },
+        { "frames",  required_argument, nullptr, 'n' },
+        { "bench",   no_argument,       nullptr, 'b' },
+        { "help",    no_argument,       nullptr, 'h' },
+        { nullptr, 0, nullptr, 0 }
+    };
+    while ((opt = getopt_long(argc, argv, "f:t:s:r:j:p:n:dPbh", long_opts, nullptr)) != -1) {
         switch (opt) {
             case 'f': fbdev = optarg; break;
             case 't': todev = optarg; break;
@@ -481,6 +498,7 @@ int main(int argc, char** argv) {
             case 'p': ppm_path = optarg; break;
             case 'n': max_frames = atol(optarg); break;
             case 'd': dry_run = 1; break;
+            case 'P': probe_only = 1; break;
             case 'h': default: usage(argv[0]); return 1;
         }
     }
@@ -488,6 +506,11 @@ int main(int argc, char** argv) {
 
     signal(SIGINT, on_sigint);
     signal(SIGTERM, on_sigint);
+
+    /* 阶段日志: 每步都 flush, 保证真机闪退时日志不丢 */
+    #define STAGE(...) do { fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); fflush(stderr); } while (0)
+
+    STAGE("[stage] main start (pid=%d)", (int)getpid());
 
     FB fb;
     std::vector<unsigned char> dry_mem;
@@ -503,15 +526,27 @@ int main(int argc, char** argv) {
         dry_mem.assign(fb.maplen, 0);
         fb.mem = dry_mem.data();
         // 触摸直接用内存假变量 (保留空 fd)
-        fprintf(stderr, "[dry] 干跑模式: 模拟 1072x1448 16bpp framebuffer, 不触碰设备\n");
-    } else if (!fb_open(&fb, fbdev)) {
-        fprintf(stderr, "无法打开 framebuffer，试试 sudo 或确认设备路径\n");
-        return 1;
+        STAGE("[dry] 干跑模式: 模拟 1072x1448 16bpp framebuffer, 不触碰设备");
+    } else {
+        STAGE("[stage] opening framebuffer %s", fbdev);
+        if (!fb_open(&fb, fbdev)) {
+            STAGE("FATAL: 无法打开 framebuffer %s: %s", fbdev, strerror(errno));
+            STAGE("提示: 需要 root (Kindle 上 framework 未停时会被占用)");
+            return 1;
+        }
+        STAGE("[stage] fb ok: %dx%d %dbpp line_bytes=%d", fb.w, fb.h, fb.bits, fb.line_bytes);
     }
 
     // Kindle eink 刷新 (非 Kindle 环境会自动退化)
     EinkRefresh eink;
+    if (probe_only) {
+        STAGE("[stage] probe mode: 扫描 eink ioctl");
+        eink_probe(fb.fd);
+        if (!dry_run) { munmap(fb.mem, fb.maplen); close(fb.fd); }
+        return 0;
+    }
     eink_init(&eink, fb.fd, 15);
+    STAGE("[stage] eink refresh: works=%d", eink.works);
 
     Layout L;
     layout_init(&L, fb.w, fb.h);
@@ -544,9 +579,20 @@ int main(int argc, char** argv) {
     // 没有 ROM: 扫描并提示
     if (rompath.empty()) {
         if (romdirs.empty()) {
-            romdirs.push_back("/mnt/us/roms");
-            romdirs.push_back("/mnt/us/documents/roms");
-            romdirs.push_back("./roms");
+            // 默认 ROM 目录 = 可执行文件所在目录下的 roms/
+            // 这样整个扩展是自包含的, 不在 /mnt/us 根目录留任何东西。
+            char exedir[4096];
+            ssize_t n = readlink("/proc/self/exe", exedir, sizeof(exedir) - 1);
+            if (n > 0) {
+                exedir[n] = '\0';
+                char* slash = strrchr(exedir, '/');
+                if (slash) *slash = '\0';
+                std::string d = std::string(exedir) + "/roms";
+                romdirs.push_back(d);
+                STAGE("[stage] 默认 ROM 目录: %s", d.c_str());
+            } else {
+                romdirs.push_back("./roms");
+            }
         }
         std::vector<std::string> found;
         scan_roms(romdirs, found);
@@ -607,13 +653,16 @@ int main(int argc, char** argv) {
     }
 
     // 画初始界面并全刷一次 (虚拟键只在启动时刷, 之后不重复刷)
+    STAGE("[stage] 画初始界面 (虚拟键)");
     fb_fill_rect(&fb, 0, 0, fb.w, fb.h, 250);
     draw_controls(&fb, &L, nullptr);
     eink_full(&eink, fb.w, fb.h);
+    STAGE("[stage] 初始全刷完成, 进入主循环");
 
     // 主循环
     int joy = 0;
     unsigned long frames = 0;
+    int warned_no_eink = 0;
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
@@ -638,7 +687,22 @@ int main(int argc, char** argv) {
 
             // 通知 eink 刷新。只刷游戏区 (虚拟键是静态的, 不参与每帧刷新,
             // 否则会大幅拖慢帧率且造成无谓残影)
-            eink_tick(&eink, L.game_x, L.game_y, L.game_w, L.game_h, fb.w, fb.h);
+            if (eink.works) {
+                eink_tick(&eink, L.game_x, L.game_y, L.game_w, L.game_h, fb.w, fb.h);
+            } else {
+                // 兜底: 没有 eink ioctl 时 framebuffer 写完不会自动上屏。
+                // 用 msync 强制回写 + 限速, 至少让画面能出第一帧。
+                // 这条路慢且闪, 只是为了让程序"不是黑的", 真实使用必须修好 ioctl。
+                if (frames == (unsigned long)frame_skip) {
+                    STAGE("[warn] eink ioctl 不可用, 改用 framebuffer 直写兜底");
+                    STAGE("[warn] 画面可能不刷新或严重残影, 请在真机跑 --probe 定位原因");
+                }
+                // mmap 用的是 MAP_SHARED, 写完会自动回写; 这里 msync 只是
+                // 尽快把脏页推给驱动, 不能替代 eink ioctl。
+                msync(fb.mem, fb.maplen, MS_SYNC);
+                // 限速: 直写没有 eink 节流, 否则 100% CPU 空转
+                usleep(200000);
+            }
         }
 
         if (max_frames > 0 && frames >= (unsigned long)max_frames) break;

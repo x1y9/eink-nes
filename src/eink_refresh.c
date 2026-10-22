@@ -155,3 +155,79 @@ void eink_finish(EinkRefresh* er, int sw, int sh) {
     do_update(er, 0, 0, sw, sh, WAVEFORM_GC16, UPDATE_MODE_FULL, 1);
     fprintf(stderr, "[eink] 退出全刷完成\n");
 }
+
+/* ================= 诊断: 暴力探测 ================= */
+
+/*
+ * 为什么需要这个:
+ *   Kindle 各代固件的 MXCFB_SEND_UPDATE 编号不统一, 光靠猜会失败。
+ *   探测失败时 eink_init 会把 works 设为 0, 之后整个程序不再刷新屏幕,
+ *   表现就是"屏幕闪一下就静止"。所以在真机上先跑 --probe 拿到真实编号。
+ *
+ * 做法:
+ *   对 'F' magic 的 nr 0..63 逐个发 ioctl, 传一个 1x1 的真实 update 结构。
+ *   判定:
+ *     ENOTTY / EINVAL(部分) -> 该命令不存在
+ *     0                     -> 可用
+ *     EPERM / 其他           -> 命令存在但参数或权限不对, 也可能可用
+ */
+void eink_probe(int fb_fd) {
+    fprintf(stderr, "[probe] fd=%d sizeof(kindle_update_data)=%zu\n",
+            fb_fd, sizeof(struct kindle_update_data));
+
+    /* 先用 FBIOGET_* 把 framebuffer 的真实情况打出来 */
+    struct {
+        unsigned long cmd;
+        const char* name;
+    } fbioc[] = {
+        { 0x4600, "FBIOGET_VSCREENINFO" },
+        { 0x4601, "FBIOGET_FSCREENINFO" },
+    };
+    (void)fbioc;
+
+    struct kindle_update_data ud;
+    memset(&ud, 0, sizeof(ud));
+    ud.update_region.top = 0;
+    ud.update_region.left = 0;
+    ud.update_region.width = 1;
+    ud.update_region.height = 1;
+    ud.waveform_mode = WAVEFORM_GC16;
+    ud.update_mode = UPDATE_MODE_PARTIAL;
+    ud.update_marker = 1;
+    ud.temp = 0x1000;
+
+    fprintf(stderr, "[probe] 扫描 'F' magic, nr=0..63 ...\n");
+    int found = 0;
+    for (int nr = 0; nr < 64; nr++) {
+        unsigned long cmd = _IOWR('F', nr, struct kindle_update_data);
+        errno = 0;
+        int r = ioctl(fb_fd, cmd, &ud);
+        int e = errno;
+        if (r == 0) {
+            fprintf(stderr, "[probe]   nr=%-3d cmd=0x%08lx -> OK\n", nr, cmd);
+            found++;
+        } else if (e != ENOTTY && e != EINVAL && e != ENOSYS) {
+            fprintf(stderr, "[probe]   nr=%-3d cmd=0x%08lx -> 存在? %s (%d)\n",
+                    nr, cmd, strerror(e), e);
+            found++;
+        }
+        errno = 0;
+    }
+
+    /* 同时试一下不带 size 编码的裸命令 (有些老驱动只认数字) */
+    for (int nr = 40; nr < 50; nr++) {
+        errno = 0;
+        int r = ioctl(fb_fd, nr, &ud);
+        int e = errno;
+        if (r == 0 || (e != ENOTTY && e != EINVAL && e != ENOSYS))
+            fprintf(stderr, "[probe]   裸 nr=%d -> %s\n", nr, r == 0 ? "OK" : strerror(e));
+    }
+
+    fprintf(stderr, "[probe] 共 %d 个候选\n", found);
+    if (found == 0) {
+        fprintf(stderr, "[probe] 结论: 这个 fb 不认 'F' magic 的 MXCFB ioctl。\n");
+        fprintf(stderr, "[probe] 可能原因: (1) framework 没停, fb 权限不够\n");
+        fprintf(stderr, "[probe]           (2) 该固件用 EPDC 而非 MXCFB\n");
+        fprintf(stderr, "[probe]           (3) 需要先 FBIOBLANK 解锁\n");
+    }
+}

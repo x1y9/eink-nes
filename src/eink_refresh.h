@@ -90,6 +90,9 @@ typedef struct {
 /* 初始化: 探测 ioctl 是否可用。失败则退化为普通 fb 写入 (桌面调试用) */
 int  eink_init(EinkRefresh* er, int fb_fd, int full_interval);
 
+/* 诊断: 暴力扫描 'F' magic 的 ioctl 号 + 打印 fb 信息。真机上用来确定正确 cmd。*/
+void eink_probe(int fb_fd);
+
 /* 刷新一个区域。waveform: WAVEFORM_GC16 等 */
 int  eink_update(EinkRefresh* er, int x, int y, int w, int h, uint32_t waveform);
 

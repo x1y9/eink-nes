@@ -48,9 +48,16 @@ jobs:
         run: |
           set -e
           python3 scripts/make_test_rom.py /tmp/test.nes
-          # -d 干跑: 内存模拟 1072x1448 PW3 屏幕, 验证核心 + 渲染管线
+          # -d / --dry-run: 内存模拟 1072x1448 PW3 屏幕, 验证核心 + 渲染管线
           # 程序内部会统计灰度层次数, <3 层返回 exit 2
+          echo "--- 短选项 -d ---"
           timeout 120 qemu-arm-static ./build/eink-nes -d -n 100 /tmp/test.nes
+          # 长选项单独测一次: KUAL 脚本用 --dry-run, getopt 不认长选项会直接
+          # 退出(之前就是这样静默失败的), 回归必须卡住
+          echo "--- 长选项 --dry-run ---"
+          timeout 120 qemu-arm-static ./build/eink-nes --dry-run -n 100 /tmp/test.nes
+          echo "--- --help 应返回 1 且打印用法 ---"
+          qemu-arm-static ./build/eink-nes --help 2>&1 | grep -q "dry-run"
           echo "冒烟测试通过"
 
       - name: 打包
@@ -71,15 +78,31 @@ jobs:
             eink-nes-pw3.tar.gz
             build/eink-nes
           body: |
-            Kindle Paperwhite 3 NES 模拟器
+            Kindle Paperwhite 3 NES emulator.
 
-            ## 安装
+            **Assets**
+            - `eink-nes-pw3.tar.gz` — install package, extract to `/mnt/us`
+            - `eink-nes` — standalone ARMv7 static binary
+
+            **Install**
             ```bash
             tar xzf eink-nes-pw3.tar.gz -C /mnt/us
             ```
-            然后 KUAL → eink-nes → 启动 NES 模拟器。
+            Then KUAL -> eink-nes -> Launch.
 
-            ## 文件
-            - `eink-nes-pw3.tar.gz` — 完整包（可执行文件 + KUAL 菜单 + 测试 ROM）
-            - `eink-nes` — 仅可执行文件（ARMv7 静态，752KB）
+            **Layout** (self-contained, nothing outside the extension dir)
+            ```
+            /mnt/us/extensions/eink-nes/
+              eink-nes        binary
+              eink-nes.sh     KUAL launcher
+              eink-nes.log    runtime log
+              roms/           put .nes files here
+            ```
+
+            **Troubleshooting**
+            ```bash
+            cd /mnt/us/extensions/eink-nes
+            sh eink-nes.sh            # run manually, log to eink-nes.log
+            sh eink-nes.sh --probe    # scan eink ioctl numbers
+            ```
           generate_release_notes: true

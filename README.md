@@ -22,28 +22,41 @@ Kindle Paperwhite 3 上的 NES 模拟器。为墨水屏做的：本地运行、�
 tar xzf eink-nes-pw3.tar.gz -C /mnt/us
 ```
 
-解压后：
+解压后**只有一个目录**，`/mnt/us` 根目录不会多出任何文件：
 
 ```
-/mnt/us/eink-nes                    可执行文件 (ARM 静态, 零依赖)
-/mnt/us/extensions/eink-nes/        KUAL 菜单
-/mnt/us/roms/                       ROM 放这里
+/mnt/us/extensions/eink-nes/
+  ├── eink-nes          可执行文件 (ARMv7 静态, 零依赖)
+  ├── eink-nes.sh       KUAL 启动脚本
+  ├── showlog.sh        日志查看
+  ├── menu.json         KUAL 菜单
+  ├── README.txt
+  ├── eink-nes.log      运行日志 (运行时生成)
+  └── roms/             ROM 放这里
 ```
+
+ROM 放 `roms/` 下（任意 `.nes`）。卸载 = 删掉 `extensions/eink-nes/` 这一个目录。
 
 然后在 Kindle 上打开 **KUAL → eink-nes → 启动 NES 模拟器**。
 
-## 首次运行建议先 SSH 手动跑
+## 出问题怎么查
 
-不要一上来就用 KUAL。SSH 进去直接跑能看到实时日志：
+**屏幕闪一下就静止** —— 说明程序接管了屏幕但 eink 刷新 ioctl 没生效。日志在：
 
-```bash
-cd /mnt/us
-./eink-nes -r /mnt/us/roms roms/test.nes
+```
+/mnt/us/extensions/eink-nes/eink-nes.log
 ```
 
-`test.nes` 是自带的测试 ROM（16 条灰度横带 + 水平滚动），用来确认渲染和刷新是否正常。日志在 stderr。
+日志是分阶段的（`[stage] ...`），最后一条 `[stage]` 就是卡住的位置。
 
-确认屏幕真的在刷、触摸真的响应，再装 KUAL 固化。
+拿真实 ioctl 号：
+
+```bash
+cd /mnt/us/extensions/eink-nes
+sh eink-nes.sh --probe
+```
+
+把 `eink-nes.log` 整个发出来即可。
 
 ## 虚拟按键
 
