@@ -63,6 +63,11 @@ jobs:
       - name: 打包
         run: bash scripts/package.sh
 
+      # KUAL 靠 config.xml 发现扩展。少了它扩展不会出现在菜单里, 而且
+      # 这种错误在 CI 里看不出来 —— 只有真机打开 KUAL 才会发现。必须卡死。
+      - name: 校验 KUAL 扩展完整性
+        run: python3 scripts/check_kual.py dist/extensions/eink-nes
+
       - uses: actions/upload-artifact@v4
         with:
           name: eink-nes-pw3

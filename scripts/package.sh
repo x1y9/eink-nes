@@ -22,7 +22,11 @@ EXT=dist/extensions/eink-nes
 mkdir -p "$EXT/roms"
 
 cp build/eink-nes "$EXT/eink-nes"
-cp kual/extensions/eink-nes/*.sh kual/extensions/eink-nes/menu.json "$EXT/"
+# KUAL 靠 config.xml 发现扩展, menu.json 是 config.xml 指向的菜单数据。
+# 两个都必须有; 少了 config.xml, 扩展根本不会出现在 KUAL 列表里。
+cp kual/extensions/eink-nes/config.xml "$EXT/config.xml"
+cp kual/extensions/eink-nes/menu.json "$EXT/menu.json"
+cp kual/extensions/eink-nes/*.sh "$EXT/"
 chmod +x "$EXT/eink-nes" "$EXT"/*.sh
 
 # 生成 README 到扩展目录内部
@@ -69,6 +73,10 @@ EOF
 
 # 自带测试 ROM (脚本生成, 无版权内容)
 python3 scripts/make_test_rom.py "$EXT/roms/test.nes"
+
+# 打包前先校验扩展完整性。KUAL 少了 config.xml 就不会显示扩展,
+# 这种问题本地不卡住就只能到真机上抓瞎。
+python3 scripts/check_kual.py "$EXT" || exit 1
 
 tar czf eink-nes-pw3.tar.gz -C dist .
 echo "OK: eink-nes-pw3.tar.gz ($(du -h eink-nes-pw3.tar.gz | cut -f1))"

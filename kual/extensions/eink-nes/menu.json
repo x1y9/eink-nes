@@ -7,14 +7,20 @@
                 {
                     "name": "启动 NES 模拟器",
                     "priority": 1,
-                    "action": "eink-nes.sh",
-                    "params": ""
+                    "action": "sh /mnt/us/extensions/eink-nes/eink-nes.sh",
+                    "exitmenu": true
                 },
                 {
                     "name": "查看日志",
                     "priority": 2,
-                    "action": "showlog.sh",
-                    "params": ""
+                    "action": "sh /mnt/us/extensions/eink-nes/showlog.sh",
+                    "exitmenu": false
+                },
+                {
+                    "name": "诊断: 探测 eink 刷新",
+                    "priority": 3,
+                    "action": "sh /mnt/us/extensions/eink-nes/eink-nes.sh --probe",
+                    "exitmenu": false
                 }
             ]
         }
