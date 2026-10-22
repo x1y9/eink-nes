@@ -13,7 +13,8 @@ import os
 import sys
 import xml.etree.ElementTree as ET
 
-REQUIRED = ["config.xml", "menu.json", "eink-nes", "eink-nes.sh", "showlog.sh"]
+REQUIRED = ["config.xml", "menu.json", "eink-nes", "eink-nes.sh",
+            "showlog.sh", "selftest.sh"]
 
 
 def main() -> int:

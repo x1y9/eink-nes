@@ -7,20 +7,41 @@
 #   /mnt/us/extensions/eink-nes/roms/*.nes      ROM
 #
 # 重要: /mnt/us 是 FAT32, 不支持 unix 执行位。chmod +x 会静默失败,
-# 直接 exec 会返回 126。所以所有启动都走 `sh <bin>` 或者把 bin 拷到
-# /tmp (tmpfs, 支持执行位) 再跑。
+# 直接 exec 会返回 126。所以二进制先拷到 /tmp (tmpfs) 再加执行位运行。
 
 export LC_ALL=C
 export LANG=C
+export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 BASE="/mnt/us/extensions/eink-nes"
-LOGFILE="$BASE/eink-nes.log"
 ROMDIR="$BASE/roms"
 
-# ---- 日志: 用 exec 把整个脚本的 stdout/stderr 重定向进日志 ----
-# 先确保目录存在 (FAT 上 mkdir -p 可用)
-mkdir -p "$BASE" "$ROMDIR" 2>/dev/null
-: > "$LOGFILE" 2>/dev/null || LOGFILE="/tmp/eink-nes.log"
+# ============================================================
+# 第一步: 建立日志。日志本身可能建不出来 (FAT 只读 / 权限),
+# 所以三个位置依次尝试, 并且把"最终用了哪个"记到 /tmp 里的
+# 面包屑文件 —— 便于 SSH 排查。
+# ============================================================
+BREADCRUMB="/tmp/eink-nes.launcher-ran"
+
+# 面包屑: 用最简单的写法, 不依赖任何变量展开和重定向到 FAT。
+# 只要脚本被执行, 这个文件就会出现 (tmpfs 一定可写)。
+{
+    echo "launcher_start=$(date)"
+    echo "pid=$$"
+    echo "base_exists=$([ -d "$BASE" ] && echo yes || echo no)"
+    echo "base_writable=$([ -w "$BASE" ] && echo yes || echo no)"
+    echo "romdir_exists=$([ -d "$ROMDIR" ] && echo yes || echo no)"
+    echo "bin_exists=$([ -f "$BASE/eink-nes" ] && echo yes || echo no)"
+    echo "args=$*"
+    echo "uname=$(uname -a)"
+} > "$BREADCRUMB" 2>&1
+
+# 日志: 优先写扩展目录, 失败退到 /tmp
+LOGFILE="$BASE/eink-nes.log"
+if ! : >> "$LOGFILE" 2>/dev/null; then
+    LOGFILE="/tmp/eink-nes.log"
+    echo "log_fallback=/tmp/eink-nes.log (cannot write $BASE/eink-nes.log)" >> "$BREADCRUMB"
+fi
 exec >> "$LOGFILE" 2>&1
 
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
@@ -28,44 +49,69 @@ log() { echo "[$(date '+%H:%M:%S')] $*"; }
 log "=============================================="
 log "eink-nes launcher start"
 log "BASE=$BASE"
+log "LOGFILE=$LOGFILE"
+log "ARGS=$*"
 log "uname: $(uname -a 2>/dev/null)"
+log "pwd: $(pwd 2>/dev/null)"
+log "PATH=$PATH"
 
-# ---- 找可执行文件 ----
+# 记录扩展目录的真实内容, 确认解压是否完整
+log "--- ls $BASE ---"
+ls -la "$BASE" 2>&1
+log "--- ls $ROMDIR ---"
+ls -la "$ROMDIR" 2>&1
+
+# ============================================================
+# 第二步: 找可执行文件
+# ============================================================
 BIN=""
 for c in "$BASE/eink-nes" "$BASE/bin/eink-nes"; do
-    [ -f "$c" ] && BIN="$c" && break
+    if [ -f "$c" ]; then BIN="$c"; break; fi
 done
 if [ -z "$BIN" ]; then
     log "FATAL: 找不到 eink-nes 可执行文件"
-    log "目录内容:"
-    ls -la "$BASE" >> "$LOGFILE" 2>&1
-    /usr/bin/eips -f -c "eink-nes: binary not found in $BASE" 2>/dev/null
-    sleep 5
+    /usr/bin/eips -f -c "eink-nes: binary not found\nin $BASE" 2>/dev/null
+    sleep 6
     exit 1
 fi
 log "BIN=$BIN"
-log "file info: $(ls -l "$BIN")"
 
-# ---- 关键: FAT 无执行位, 拷到 tmpfs 再跑 ----
+# 记录文件的真实类型 (用 od 读前 4 字节, Kindle 上可能没有 file 命令)
+log "magic: $(od -An -tx1 -N4 "$BIN" 2>/dev/null | tr -d ' \n')"
+log "size: $(wc -c < "$BIN" 2>/dev/null) bytes"
+
+# ============================================================
+# 第三步: 拷到 tmpfs 再加执行位 (FAT32 无执行位)
+# ============================================================
 RUNBIN="/tmp/eink-nes.bin"
-rm -f "$RUNBIN"
+rm -f "$RUNBIN" 2>/dev/null
 if cp "$BIN" "$RUNBIN" 2>>"$LOGFILE"; then
     chmod 755 "$RUNBIN"
-    log "已拷贝到 $RUNBIN ($(wc -c < "$RUNBIN") bytes)"
+    log "已拷贝到 $RUNBIN ($(wc -c < "$RUNBIN" 2>/dev/null) bytes)"
+    # 校验大小一致, 确认 cp 没截断
+    S1=$(wc -c < "$BIN" 2>/dev/null)
+    S2=$(wc -c < "$RUNBIN" 2>/dev/null)
+    log "size check: src=$S1 dst=$S2"
+    if [ "$S1" != "$S2" ]; then
+        log "FATAL: 拷贝大小不一致, 可能磁盘空间不足"
+        /usr/bin/eips -f -c "copy truncated\nsrc=$S1 dst=$S2" 2>/dev/null
+        sleep 6
+        exit 1
+    fi
 else
-    log "WARN: 拷贝失败, 尝试直接 sh 执行"
+    log "WARN: 拷贝失败, 尝试直接执行 $BIN"
     RUNBIN="$BIN"
 fi
 
-# ---- 参数 ----
-# KUAL 不传位置参数, 但手动跑时可以带: sh eink-nes.sh --probe
-# 以及第一个非选项参数当作 ROM 路径
+# ============================================================
+# 第四步: 参数 / ROM
+# ============================================================
 ROM="$EINK_NES_ROM"
 PASSTHRU=""
 for arg in "$@"; do
     case "$arg" in
         -*) PASSTHRU="$PASSTHRU $arg" ;;
-        *)  [ -f "$arg" ] && ROM="$arg" || PASSTHRU="$PASSTHRU $arg" ;;
+        *)  if [ -f "$arg" ]; then ROM="$arg"; else PASSTHRU="$PASSTHRU $arg"; fi ;;
     esac
 done
 
@@ -75,19 +121,17 @@ fi
 log "ROM=$ROM"
 log "PASSTHRU=$PASSTHRU"
 
-# ---- 显示启动横幅, 让用户知道程序接管了屏幕 ----
-/usr/bin/eips -f -c "eink-nes starting...\n\nlog: $LOGFILE" 2>/dev/null
-
-# ---- 停 UI 释放 framebuffer ----
-# PW3 的 UI 进程是 cvm (Kindle 阅读器), framework 是它的 init 脚本。
-# 只停 framework 不够, cvm 可能残留; 两者都处理。
+# ============================================================
+# 第五步: 停 UI 释放 framebuffer
+# ============================================================
 stop_ui() {
     log "stopping framework"
     if [ -x /etc/init.d/framework ]; then
         /etc/init.d/framework stop >> "$LOGFILE" 2>&1
+    else
+        log "  /etc/init.d/framework 不存在"
     fi
-    # 兜底: 直接杀 cvm / reader
-    killall cvm 2>/dev/null && log "killed cvm"
+    killall cvm 2>/dev/null && log "  killed cvm"
     killall -q pillow 2>/dev/null
     sleep 1
 }
@@ -98,59 +142,45 @@ restore_ui() {
     if [ -x /etc/init.d/framework ]; then
         /etc/init.d/framework start >> "$LOGFILE" 2>&1
     fi
-    rm -f /tmp/eink-nes.bin
-    log "launcher exit"
+    rm -f /tmp/eink-nes.bin 2>/dev/null
+    log "launcher exit rc=$?"
     log "=============================================="
 }
 
-trap restore_ui EXIT INT TERM
+trap restore_ui EXIT
+trap 'log "caught INT/TERM"; exit 1' INT TERM
 
-# 阻止休眠
 /usr/sbin/lipc-set-prop com.lab126.powerd preventScreenSaver 1 2>/dev/null
+
+# 先显示横幅, 证明脚本跑到了这里 (屏幕上能看到)
+/usr/bin/eips -f -c "eink-nes\nlauncher running\nlog: $LOGFILE" 2>/dev/null
+log "eips banner shown"
 
 stop_ui
 
-# ---- 检查 framebuffer ----
 if [ ! -e /dev/fb0 ]; then
     log "FATAL: /dev/fb0 不存在"
     /usr/bin/eips -f -c "no /dev/fb0" 2>/dev/null
-    sleep 5
+    sleep 6
     exit 1
 fi
-log "fb0: $(ls -l /dev/fb0)"
+log "fb0: $(ls -l /dev/fb0 2>&1)"
 
-# ---- 检查程序能否跑起来 ----
-# 注意: 不要用 `prog | while read`, 那样 $? 是管道尾部的返回值, 拿不到程序退出码。
-# 先写临时文件再读, 保留真实 rc。
-if [ -z "$PASSTHRU" ]; then
-    log "--- self test (--dry-run) ---"
-    "$RUNBIN" --dry-run -r "$ROMDIR" -n 60 > /tmp/eink-nes.selftest 2>&1
-    RC=$?
-    log "self test rc=$RC"
-    while IFS= read -r line; do log "  $line"; done < /tmp/eink-nes.selftest
-    rm -f /tmp/eink-nes.selftest
-    if [ "$RC" != "0" ]; then
-        log "WARN: 自检失败 (rc=$RC), 仍尝试正式运行"
-    fi
-fi
-
-# ---- 正式运行 ----
-if [ -n "$ROM" ] && [ -f "$ROM" ]; then
-    log "--- run: $RUNBIN -r $ROMDIR $PASSTHRU $ROM ---"
-    # shellcheck disable=SC2086
-    "$RUNBIN" -r "$ROMDIR" $PASSTHRU "$ROM"
-    log "eink-nes exit code: $?"
-elif [ -n "$PASSTHRU" ]; then
-    # 诊断模式 (如 --probe) 不需要 ROM
+# ============================================================
+# 第六步: 正式运行
+# ============================================================
+if [ -n "$PASSTHRU" ]; then
     log "--- run: $RUNBIN $PASSTHRU ---"
-    # shellcheck disable=SC2086
     "$RUNBIN" $PASSTHRU
+    log "eink-nes exit code: $?"
+elif [ -n "$ROM" ] && [ -f "$ROM" ]; then
+    log "--- run: $RUNBIN -r $ROMDIR $ROM ---"
+    "$RUNBIN" -r "$ROMDIR" "$ROM"
     log "eink-nes exit code: $?"
 else
     log "FATAL: $ROMDIR 下没有 .nes 文件"
-    log "把 ROM 放到 $ROMDIR/ 后重试"
-    /usr/bin/eips -f -c "No .nes in roms/" 2>/dev/null
-    sleep 5
+    /usr/bin/eips -f -c "No .nes found in\n$ROMDIR" 2>/dev/null
+    sleep 6
 fi
 
-# trap 恢复 UI
+# trap restore_ui 会做收尾
